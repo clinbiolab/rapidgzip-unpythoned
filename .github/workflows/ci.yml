@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    container: debian:13
+
+    steps:
+      - name: Install native build prerequisites
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            ca-certificates \
+            git \
+            cmake \
+            make \
+            clang-19 \
+            llvm-19 \
+            nasm
+
+      - name: Check out pinned recursive source
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Build
+        run: make
+
+      - name: Test
+        run: make test
+
+      - name: Verify source and submodules remain clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          dirty=0
+
+          repository_status="$(
+            git status --short --untracked-files=all --ignore-submodules=all
+          )"
+          if [[ -n "$repository_status" ]]; then
+            echo "Repository-owned source changed during the build:"
+            printf '%s\n' "$repository_status"
+            dirty=1
+          fi
+
+          submodule_status="$(git submodule status --recursive)"
+          if grep -Eq '^[+-U]' <<<"$submodule_status"; then
+            echo "A recursive submodule is missing or not at its pinned revision:"
+            printf '%s\n' "$submodule_status"
+            dirty=1
+          fi
+
+          if ! git submodule foreach --recursive '
+            tracked_status="$(
+              git status --short --untracked-files=no --ignore-submodules=all
+            )"
+            untracked_files="$(git ls-files --others --full-name)"
+            if test -n "$tracked_status" || test -n "$untracked_files"; then
+              echo "Dirty submodule: $displaypath"
+              test -z "$tracked_status" || printf "%s\n" "$tracked_status"
+              test -z "$untracked_files" || {
+                echo "Untracked files (including ignored files):"
+                printf "%s\n" "$untracked_files"
+              }
+              exit 1
+            fi
+          '; then
+            dirty=1
+          fi
+
+          exit "$dirty"
