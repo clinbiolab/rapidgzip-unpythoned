@@ -34,6 +34,11 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      - name: Trust mounted checkout for Git
+        run: |
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
+          git config --system --add safe.directory "$GITHUB_WORKSPACE/*"
+
       - name: Build
         run: make
 
