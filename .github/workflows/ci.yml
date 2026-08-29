@@ -45,6 +45,9 @@ jobs:
       - name: Test
         run: make test
 
+      - name: Package
+        run: make package
+
       - name: Verify source and submodules remain clean
         shell: bash
         run: |
