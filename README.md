@@ -1,5 +1,7 @@
 # rapidgzip-unpythoned
 
+[![CI](https://github.com/clinbiolab/rapidgzip-unpythoned/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/clinbiolab/rapidgzip-unpythoned/actions/workflows/ci.yml)
+
 **A native, standalone build of rapidgzip. No Python environment required.**
 
 [rapidgzip](https://github.com/mxmlnkn/rapidgzip) is a fast parallel gzip decompressor with a native C++ command-line implementation. `rapidgzip-unpythoned` builds that CLI directly from pinned rapidgzip sources and produces an ordinary executable that can be run from the shell or used as a decompression engine by other software.
