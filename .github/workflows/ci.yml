@@ -13,7 +13,7 @@ permissions:
 jobs:
   build-and-test:
     runs-on: ubuntu-24.04
-    container: debian:13
+    container: ubuntu:24.04
 
     steps:
       - name: Install native build prerequisites

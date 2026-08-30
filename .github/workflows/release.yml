@@ -1,0 +1,218 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+
+    steps:
+      - name: Install native build and release prerequisites
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            ca-certificates \
+            git \
+            cmake \
+            make \
+            clang-19 \
+            llvm-19 \
+            nasm \
+            gh
+
+      - name: Check out tagged pinned recursive source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Trust mounted checkout for Git
+        run: |
+          git config --system --add safe.directory "$GITHUB_WORKSPACE"
+          git config --system --add safe.directory "$GITHUB_WORKSPACE/*"
+
+      - name: Validate release tag and provenance
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="$GITHUB_REF_NAME"
+          tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.([1-9][0-9]*))?$'
+          if [[ "$GITHUB_REF_TYPE" != "tag" || ! "$tag" =~ $tag_pattern ]]; then
+            echo "Invalid release tag: $tag" >&2
+            echo "Expected vX.Y.Z or vX.Y.Z-rc.N, without leading zeroes and with N >= 1." >&2
+            exit 1
+          fi
+
+          distribution_version="${tag#v}"
+          upstream_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          if [[ -n "${BASH_REMATCH[4]}" ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+
+          tag_type="$(git cat-file -t "refs/tags/$tag")"
+          if [[ "$tag_type" != "tag" ]]; then
+            echo "Release tag $tag is lightweight; an annotated tag is required." >&2
+            exit 1
+          fi
+
+          tagged_commit="$(git rev-parse "refs/tags/$tag^{commit}")"
+          checked_out_commit="$(git rev-parse HEAD)"
+          if [[ "$checked_out_commit" != "$tagged_commit" ]]; then
+            echo "Checked-out commit $checked_out_commit does not match tagged commit $tagged_commit." >&2
+            exit 1
+          fi
+
+          if ! git rev-parse --verify 'refs/remotes/origin/main^{commit}' >/dev/null; then
+            echo "origin/main is unavailable; a full-history checkout is required." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$tagged_commit" origin/main; then
+            echo "Tagged commit $tagged_commit is not contained in origin/main." >&2
+            exit 1
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "distribution_version=$distribution_version"
+            echo "upstream_version=$upstream_version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: make
+
+      - name: Test
+        run: make test
+
+      - name: Package
+        env:
+          DIST_VERSION: ${{ steps.release.outputs.distribution_version }}
+        run: make package DIST_VERSION="$DIST_VERSION"
+
+      - name: Prepare release metadata
+        id: assets
+        shell: bash
+        env:
+          DISTRIBUTION_VERSION: ${{ steps.release.outputs.distribution_version }}
+          UPSTREAM_VERSION: ${{ steps.release.outputs.upstream_version }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          archive="dist/rapidgzip-unpythoned-${DISTRIBUTION_VERSION}-linux-x86_64.tar.gz"
+          checksum="${archive}.sha256"
+          for asset in "$archive" "$checksum"; do
+            if [[ ! -f "$asset" ]]; then
+              echo "Expected release asset is missing: $asset" >&2
+              exit 1
+            fi
+          done
+
+          notes_file="build/release-notes.md"
+          if [[ "$PRERELEASE" == "true" ]]; then
+            release_status="This is a release candidate."
+          else
+            release_status="This is a final release."
+          fi
+          cat > "$notes_file" <<EOF
+          Standalone native build of upstream rapidgzip $UPSTREAM_VERSION for Linux x86-64.
+
+          $release_status
+
+          The downloadable archive includes the rapidgzip executable, README,
+          upstream and third-party license texts, generated third-party notices,
+          and the binary's OSS attribution output. A SHA-256 checksum is supplied
+          as a separate file.
+          EOF
+
+          {
+            echo "archive=$archive"
+            echo "checksum=$checksum"
+            echo "notes_file=$notes_file"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify source and submodules remain clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          dirty=0
+
+          repository_status="$(
+            git status --short --untracked-files=all --ignore-submodules=all
+          )"
+          if [[ -n "$repository_status" ]]; then
+            echo "Repository-owned source changed during the release build:" >&2
+            printf '%s\n' "$repository_status" >&2
+            dirty=1
+          fi
+
+          submodule_status="$(git submodule status --recursive)"
+          if grep -Eq '^[+-U]' <<<"$submodule_status"; then
+            echo "A recursive submodule is missing or not at its pinned revision:" >&2
+            printf '%s\n' "$submodule_status" >&2
+            dirty=1
+          fi
+
+          if ! git submodule foreach --recursive '
+            tracked_status="$(
+              git status --short --untracked-files=no --ignore-submodules=all
+            )"
+            untracked_files="$(git ls-files --others --full-name)"
+            if test -n "$tracked_status" || test -n "$untracked_files"; then
+              echo "Dirty submodule: $displaypath"
+              test -z "$tracked_status" || printf "%s\n" "$tracked_status"
+              test -z "$untracked_files" || {
+                echo "Untracked files (including ignored files):"
+                printf "%s\n" "$untracked_files"
+              }
+              exit 1
+            fi
+          '; then
+            dirty=1
+          fi
+
+          exit "$dirty"
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          DISTRIBUTION_VERSION: ${{ steps.release.outputs.distribution_version }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          ARCHIVE: ${{ steps.assets.outputs.archive }}
+          CHECKSUM: ${{ steps.assets.outputs.checksum }}
+          NOTES_FILE: ${{ steps.assets.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "A GitHub Release already exists for $RELEASE_TAG; refusing to modify it." >&2
+            exit 1
+          fi
+
+          release_flags=(--latest)
+          if [[ "$PRERELEASE" == "true" ]]; then
+            release_flags=(--prerelease --latest=false)
+          fi
+
+          gh release create "$RELEASE_TAG" \
+            "$ARCHIVE" \
+            "$CHECKSUM" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "rapidgzip-unpythoned $DISTRIBUTION_VERSION" \
+            --notes-file "$NOTES_FILE" \
+            "${release_flags[@]}"
