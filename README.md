@@ -65,6 +65,27 @@ cat reads.fastq.gz | ./build/rapidgzip -d > reads.fastq
 
 This makes it suitable both for direct command-line use and as an external decompression engine for other software.
 
+## Performance
+
+Somewhat surprisingly, the unpythoned build was consistently faster than the official PyPI distribution of rapidgzip 0.16.0 on the tested system. On an AMD EPYC 7443P, decompressing the same gzip-compressed FASTQ dataset to `/dev/null`, mean wall-clock time was lower by 4.65% at 4 decoder threads (95% CI: 4.58–4.72%), 4.83% at 12 threads (4.79–4.86%), 4.18% at 24 threads (4.06–4.30%), and 5.21% with the default parallelism (5.14–5.29%).
+
+The benchmark used 500 runs per configuration, with run order randomized and the input stored on tmpfs to minimize I/O variability. Bars show mean wall-clock time; error bars show ±1 SD. The confidence intervals above are paired across benchmark rounds.
+
+![rapidgzip 0.16.0: Unpythoned vs PyPI](rapidgzip-walltime-bars.png)
+
+The dataset was a 6.3 GB concatenation of four gzipped FASTQ files from the publicly available [GIAB NA12878 exome dataset](https://ftp.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/NA12878/Garvan_NA12878_HG001_HiSeq_Exome/):
+
+```sh
+cat \
+NIST7035_TAAGGCGA_L001_R2_001_trimmed.fastq.gz \
+NIST7035_TAAGGCGA_L002_R2_001_trimmed.fastq.gz \
+NIST7086_CGTACTAG_L001_R2_001_trimmed.fastq.gz \
+NIST7086_CGTACTAG_L002_R2_001_trimmed.fastq.gz \
+> Garvan_NA12878_HG001_HiSeq_Exome_concatenated_R2.fastq.gz
+```
+
+SHA-256: `eb8bcfd8612b0ccadb2252f42a5645f5923e2f043403ebf1e5c91aa82cfb817d`
+
 ## Testing
 
 Run the focused test suite with:
